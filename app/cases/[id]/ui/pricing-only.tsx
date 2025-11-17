@@ -1,9 +1,13 @@
-export default function PricingOnly({ caseData }: any) {
+interface Props {
+  caseData: any;
+}
+
+export default function PricingOnlyWorkspace({ caseData }: Props) {
   return (
     <div>
       <h2 className="text-xl font-semibold mb-3">Pricing Tool</h2>
       <p className="text-sm text-slate-600">
-        Material and labour cost estimation will be implemented here.
+        Pricing module will be implemented here.
       </p>
     </div>
   );
