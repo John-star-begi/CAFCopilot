@@ -7,7 +7,7 @@ export default function DiagnosisOnlyWorkspace({ caseData }: any) {
   const [triageError, setTriageError] = useState("");
   const [triageResult, setTriageResult] = useState<any>(null);
 
-  const [answers, setAnswers] = useState({});
+  const [answers, setAnswers] = useState<Record<string, string>>({});
   const [finalDiagLoading, setFinalDiagLoading] = useState(false);
   const [finalDiagResult, setFinalDiagResult] = useState<any>(null);
 
