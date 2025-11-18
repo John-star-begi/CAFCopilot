@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
-import { put } from "@vercel/blob";
+import { supabase } from "@/lib/supabase";
 
-export const runtime = "edge"; // Faster + cheaper execution
+export const runtime = "edge";
 
 export async function POST(req: Request) {
   try {
@@ -10,29 +10,45 @@ export async function POST(req: Request) {
 
     if (!filename) {
       return NextResponse.json(
-        { error: "Missing ?filename= query" },
+        { error: "Filename is required" },
         { status: 400 }
       );
     }
 
-    // Read the file binary
-    const fileBuffer = await req.arrayBuffer();
-    const fileBytes = new Uint8Array(fileBuffer);
+    const arrayBuffer = await req.arrayBuffer();
+    const fileBuffer = new Uint8Array(arrayBuffer);
 
-    // Upload to Vercel Blob
-    const blob = await put(filename, fileBytes, {
-      access: "public",
-    });
+    // Upload to Supabase Storage bucket "cases"
+    const path = `${Date.now()}-${filename}`;
+
+    const { data, error } = await supabase.storage
+      .from("cases")
+      .upload(path, fileBuffer, {
+        contentType: "image/jpeg",
+        upsert: false,
+      });
+
+    if (error) {
+      console.error(error);
+      return NextResponse.json(
+        { error: "Upload failed" },
+        { status: 500 }
+      );
+    }
+
+    // Public URL
+    const {
+      data: { publicUrl },
+    } = supabase.storage.from("cases").getPublicUrl(path);
 
     return NextResponse.json({
-      url: blob.url,
-      pathname: blob.pathname,
-      contentType: blob.contentType,
-      size: blob.size,
+      url: publicUrl,
+      contentType: "image/jpeg",
     });
-  } catch (error: any) {
+  } catch (err: any) {
+    console.error("UPLOAD ERROR", err);
     return NextResponse.json(
-      { error: error?.message || "Upload failed." },
+      { error: err?.message || "Upload failed" },
       { status: 500 }
     );
   }
