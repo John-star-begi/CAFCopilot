@@ -4,28 +4,35 @@ import { useState } from "react";
 import { supabase } from "@/lib/supabase";
 
 type Diagnosis = {
-  title: string;
-  description: string;
+  title?: string;
+  description?: string;
   trade_required?: string;
   subbie_quote_incl_gst?: number;
-  estimated_labor_minutes?: number;
-  estimated_material_cost?: number;
-  materials_needed?: string[];
-  safety_concerns?: string[];
+  [key: string]: any;
+};
+
+type BaselineCostItem = {
+  item: string;
+  estimated_cost_ex_gst: number;
+  notes: string;
 };
 
 type PricingResponse = {
   currency: string;
-  market_lower_bound: number;
-  market_upper_bound: number;
-  subcontractor_quote_incl_gst: number;
+
+  fair_range_low: number;
+  fair_range_high: number;
+
+  subcontractor_quote_incl_gst: number | null;
   position_vs_market:
     | "below_range"
     | "lower_mid_range"
     | "mid_range"
     | "upper_mid_range"
     | "above_range"
+    | "n/a"
     | string;
+
   recommended_markup_percent: number;
   recommended_markup_amount: number;
   caf_recommended_sell_price: number;
@@ -35,9 +42,18 @@ type PricingResponse = {
     | "mid_range"
     | "upper_mid_range"
     | "above_range"
+    | "n/a"
     | string;
+
   should_negotiate_or_change_subbie: boolean;
-  reasoning_summary: string;
+
+  breakdown: {
+    scope_summary: string;
+    baseline_costs: BaselineCostItem[];
+    market_benchmarks: string[];
+    comparison_summary: string;
+    markup_strategy: string;
+  };
 };
 
 export default function PricingOnlyWorkspace({ caseData }: { caseData: any }) {
@@ -54,18 +70,16 @@ export default function PricingOnlyWorkspace({ caseData }: { caseData: any }) {
 
   const [manualDiagJSON, setManualDiagJSON] = useState(
     JSON.stringify(
-      caseData.diagnoses && Array.isArray(caseData.diagnoses)
-        ? caseData.diagnoses
+      diagnoses.length
+        ? diagnoses
         : [
             {
-              title: "Example tap replacement",
+              title: "Replace kitchen tap",
               description:
-                "Supply and install new basin mixer tap. Remove old tap, fit new mid range mixer, test operation.",
+                "Replace existing kitchen tap with a new standard mixer tap, including removal, install and test.",
               trade_required: "plumber",
-              subbie_quote_incl_gst: 100,
-              estimated_labor_minutes: 60,
-              estimated_material_cost: 70,
-              materials_needed: ["basin mixer tap", "plumbers tape"],
+              // Optional: if you already have a subbie price, include:
+              // subbie_quote_incl_gst: 150
             },
           ],
       null,
@@ -74,6 +88,48 @@ export default function PricingOnlyWorkspace({ caseData }: { caseData: any }) {
   );
 
   const safeArr = (v: any) => (Array.isArray(v) ? v : []);
+
+  const formatMoney = (value: number | null | undefined, currency: string) => {
+    if (value === null || value === undefined || Number.isNaN(value)) {
+      return "N/A";
+    }
+    return `${currency} ${value.toFixed(2)}`;
+  };
+
+  const formatPosition = (value: string) => {
+    switch (value) {
+      case "below_range":
+        return "Below market range";
+      case "lower_mid_range":
+        return "Lower mid market";
+      case "mid_range":
+        return "Mid market";
+      case "upper_mid_range":
+        return "Upper mid market";
+      case "above_range":
+        return "Above market range";
+      case "n/a":
+        return "Not applicable";
+      default:
+        return value;
+    }
+  };
+
+  const positionBadgeClass = (value: string) => {
+    switch (value) {
+      case "below_range":
+        return "bg-green-100 text-green-800";
+      case "lower_mid_range":
+      case "mid_range":
+        return "bg-blue-100 text-blue-800";
+      case "upper_mid_range":
+        return "bg-amber-100 text-amber-800";
+      case "above_range":
+        return "bg-red-100 text-red-800";
+      default:
+        return "bg-gray-100 text-gray-700";
+    }
+  };
 
   // Load manual diagnosis JSON
   const loadManualDiagnosis = () => {
@@ -96,14 +152,6 @@ export default function PricingOnlyWorkspace({ caseData }: { caseData: any }) {
   const runPricing = async () => {
     if (!selectedDiag) {
       alert("Select a diagnosis first.");
-      return;
-    }
-
-    if (
-      selectedDiag.subbie_quote_incl_gst === undefined ||
-      selectedDiag.subbie_quote_incl_gst === null
-    ) {
-      alert("Selected diagnosis is missing subcontractor quote (incl GST).");
       return;
     }
 
@@ -141,42 +189,25 @@ export default function PricingOnlyWorkspace({ caseData }: { caseData: any }) {
     }
   };
 
-  const formatPosition = (value: string) => {
-    switch (value) {
-      case "below_range":
-        return "Below market range";
-      case "lower_mid_range":
-        return "Lower mid market";
-      case "mid_range":
-        return "Mid market";
-      case "upper_mid_range":
-        return "Upper mid market";
-      case "above_range":
-        return "Above market range";
-      default:
-        return value;
-    }
-  };
-
   return (
     <section className="mt-6 border rounded-xl p-6 bg-white space-y-6">
-      <h2 className="text-xl font-semibold">Pricing Brain (Quote Checker)</h2>
+      <h2 className="text-xl font-semibold">Pricing Brain</h2>
       <p className="text-sm text-gray-600">
-        Load or paste diagnoses that include the subcontractor quote, then let
-        the Pricing Brain compare it to the Melbourne market and suggest a CAF
-        sell price.
+        Paste simple descriptions (e.g. &quot;Replace kitchen tap&quot;) or
+        full subcontractor quotes. Select a diagnosis and let the Pricing Brain
+        estimate fair market pricing and a CAF sell price.
       </p>
 
       {/* Diagnosis source */}
       <div className="p-4 border rounded-lg bg-gray-50 space-y-2">
         <h3 className="text-sm font-semibold mb-1">Diagnosis Source</h3>
         <p className="text-xs text-gray-600">
-          Paste an array of diagnoses. Each item should include at least a
-          description and a field like{" "}
+          Paste an array of diagnosis objects. Each item can be as simple as a
+          description, or can include a{" "}
           <code className="font-mono text-[11px]">
             subbie_quote_incl_gst
           </code>{" "}
-          for the subcontractor quote including GST.
+          field if you already have a subcontractor price.
         </p>
 
         <textarea
@@ -222,7 +253,7 @@ export default function PricingOnlyWorkspace({ caseData }: { caseData: any }) {
                 {d.title || `Diagnosis ${i + 1}`}
               </h4>
               <p className="text-xs mt-1 text-gray-700 line-clamp-2">
-                {d.description}
+                {d.description || ""}
               </p>
 
               <p className="text-xs text-gray-500 mt-2">
@@ -230,9 +261,10 @@ export default function PricingOnlyWorkspace({ caseData }: { caseData: any }) {
               </p>
               <p className="text-xs text-gray-500">
                 Subbie quote (incl GST):{" "}
-                {d.subbie_quote_incl_gst !== undefined
+                {d.subbie_quote_incl_gst !== undefined &&
+                d.subbie_quote_incl_gst !== null
                   ? `AUD ${d.subbie_quote_incl_gst}`
-                  : "Not set"}
+                  : "Not provided"}
               </p>
             </button>
           ))}
@@ -244,37 +276,19 @@ export default function PricingOnlyWorkspace({ caseData }: { caseData: any }) {
         <div className="p-4 border rounded-lg space-y-3 bg-gray-50">
           <h3 className="text-sm font-semibold">Selected Diagnosis</h3>
 
-          <p className="text-sm text-gray-800">{selectedDiag.description}</p>
+          <p className="text-sm text-gray-800">
+            {selectedDiag.description || selectedDiag.title || ""}
+          </p>
 
           <div className="text-xs text-gray-600 space-y-1">
-            <p>
-              Trade: {selectedDiag.trade_required || "N/A"}
-            </p>
+            <p>Trade: {selectedDiag.trade_required || "N/A"}</p>
             <p>
               Subcontractor quote (incl GST):{" "}
-              {selectedDiag.subbie_quote_incl_gst !== undefined
+              {selectedDiag.subbie_quote_incl_gst !== undefined &&
+              selectedDiag.subbie_quote_incl_gst !== null
                 ? `AUD ${selectedDiag.subbie_quote_incl_gst}`
-                : "Not set"}
+                : "Not provided (direct CAF pricing case)"}
             </p>
-            <p>
-              Estimated labour:{" "}
-              {selectedDiag.estimated_labor_minutes || "N/A"} minutes
-            </p>
-            <p>
-              Estimated materials: $
-              {selectedDiag.estimated_material_cost || 0}
-            </p>
-
-            {safeArr(selectedDiag.materials_needed).length > 0 && (
-              <div className="mt-2">
-                <p className="font-semibold mb-1">Materials needed:</p>
-                <ul className="list-disc list-inside">
-                  {selectedDiag.materials_needed!.map((m, i) => (
-                    <li key={i}>{m}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
           </div>
 
           <button
@@ -282,7 +296,7 @@ export default function PricingOnlyWorkspace({ caseData }: { caseData: any }) {
             disabled={pricingLoading}
             className="bg-purple-700 text-white px-4 py-2 rounded-md text-sm hover:bg-purple-800 disabled:bg-gray-400"
           >
-            {pricingLoading ? "Calculating..." : "Calculate CAF Pricing"}
+            {pricingLoading ? "Calculating..." : "Run Pricing Brain"}
           </button>
 
           {pricingError && (
@@ -293,60 +307,190 @@ export default function PricingOnlyWorkspace({ caseData }: { caseData: any }) {
 
       {/* Pricing output */}
       {pricing && (
-        <div className="border-t pt-4 space-y-3">
-          <h3 className="text-sm font-semibold text-gray-800">
-            Pricing Suggestion (AI)
-          </h3>
+        <div className="border-t pt-4 space-y-4">
+          {/* Summary card */}
+          <div className="bg-gray-900 text-gray-100 rounded-lg p-4 space-y-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <p className="text-xs uppercase tracking-wide text-gray-400">
+                  CAF Recommended Sell Price
+                </p>
+                <p className="text-2xl font-semibold">
+                  {formatMoney(
+                    pricing.caf_recommended_sell_price,
+                    pricing.currency
+                  )}
+                </p>
+              </div>
 
-          <div className="bg-gray-100 p-4 rounded-lg text-sm space-y-2">
+              <div className="text-right">
+                <p className="text-xs uppercase tracking-wide text-gray-400">
+                  Fair Market Range (incl GST)
+                </p>
+                <p className="text-sm">
+                  {formatMoney(pricing.fair_range_low, pricing.currency)} –{" "}
+                  {formatMoney(pricing.fair_range_high, pricing.currency)}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-2 mt-2">
+              <div>
+                <p className="text-xs text-gray-400">
+                  Subbie quote (incl GST)
+                </p>
+                <p className="text-sm">
+                  {pricing.subcontractor_quote_incl_gst !== null
+                    ? formatMoney(
+                        pricing.subcontractor_quote_incl_gst,
+                        pricing.currency
+                      )
+                    : "None – direct CAF pricing"}
+                </p>
+              </div>
+
+              <div className="flex flex-col items-end text-xs">
+                <span className="mb-1">CAF position after markup</span>
+                <span
+                  className={
+                    "inline-flex items-center rounded-full px-2 py-1 text-[11px] font-medium " +
+                    positionBadgeClass(pricing.caf_position_after_markup)
+                  }
+                >
+                  {formatPosition(pricing.caf_position_after_markup)}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Markup block */}
+          <div className="bg-gray-50 border rounded-lg p-4 text-sm space-y-1">
+            <h3 className="text-sm font-semibold text-gray-800 mb-1">
+              Markup & Action
+            </h3>
             <p>
-              <span className="font-semibold">Market range: </span>
-              {pricing.currency}{" "}
-              {pricing.market_lower_bound.toFixed(2)} to{" "}
-              {pricing.currency}{" "}
-              {pricing.market_upper_bound.toFixed(2)}
+              <span className="font-semibold">Recommended markup: </span>
+              {pricing.recommended_markup_percent.toFixed(1)} %
             </p>
-
             <p>
-              <span className="font-semibold">
-                Subbie quote position:
-              </span>{" "}
-              {formatPosition(pricing.position_vs_market)} (
-              {pricing.currency}{" "}
-              {pricing.subcontractor_quote_incl_gst.toFixed(2)})
+              <span className="font-semibold">Markup amount: </span>
+              {formatMoney(
+                pricing.recommended_markup_amount,
+                pricing.currency
+              )}
             </p>
-
             <p>
-              <span className="font-semibold">
-                Recommended markup:
-              </span>{" "}
-              {pricing.recommended_markup_percent}% (
-              {pricing.currency}{" "}
-              {pricing.recommended_markup_amount.toFixed(2)})
+              <span className="font-semibold">CAF sell price: </span>
+              {formatMoney(
+                pricing.caf_recommended_sell_price,
+                pricing.currency
+              )}
             </p>
-
             <p>
-              <span className="font-semibold">
-                CAF recommended sell price:
-              </span>{" "}
-              {pricing.currency}{" "}
-              {pricing.caf_recommended_sell_price.toFixed(2)}{" "}
-              <span className="text-xs text-gray-600">
-                ({formatPosition(pricing.caf_position_after_markup)})
-              </span>
+              <span className="font-semibold">Subbie position: </span>
+              {formatPosition(pricing.position_vs_market)}
             </p>
-
             <p>
-              <span className="font-semibold">Action: </span>
+              <span className="font-semibold">Recommended action: </span>
               {pricing.should_negotiate_or_change_subbie
-                ? "Consider negotiating or changing subcontractor."
-                : "Subbie quote is acceptable with this markup."}
+                ? "Consider negotiating the subcontractor price or sourcing another subcontractor."
+                : "Subcontractor pricing is workable with this markup."}
             </p>
+          </div>
 
-            <p className="text-xs text-gray-700 mt-2">
-              <span className="font-semibold">Reasoning: </span>
-              {pricing.reasoning_summary}
-            </p>
+          {/* Breakdown cards */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* Scope + comparison */}
+            <div className="border rounded-lg p-4 bg-white space-y-3">
+              <div>
+                <h4 className="text-sm font-semibold mb-1">Scope Summary</h4>
+                <p className="text-xs text-gray-700">
+                  {pricing.breakdown.scope_summary}
+                </p>
+              </div>
+
+              <div>
+                <h4 className="text-sm font-semibold mb-1">
+                  Comparison Summary
+                </h4>
+                <p className="text-xs text-gray-700">
+                  {pricing.breakdown.comparison_summary}
+                </p>
+              </div>
+
+              <div>
+                <h4 className="text-sm font-semibold mb-1">
+                  Markup Strategy
+                </h4>
+                <p className="text-xs text-gray-700">
+                  {pricing.breakdown.markup_strategy}
+                </p>
+              </div>
+            </div>
+
+            {/* Baseline + benchmarks */}
+            <div className="border rounded-lg p-4 bg-white space-y-3">
+              <div>
+                <h4 className="text-sm font-semibold mb-1">
+                  Baseline Cost Build-Up (ex-GST)
+                </h4>
+                <div className="border rounded-md overflow-hidden">
+                  <table className="w-full text-[11px]">
+                    <thead className="bg-gray-100">
+                      <tr>
+                        <th className="text-left px-2 py-1">Item</th>
+                        <th className="text-right px-2 py-1">Est. ex-GST</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {safeArr(
+                        pricing.breakdown.baseline_costs
+                      ).map((row: BaselineCostItem, idx: number) => (
+                        <tr
+                          key={idx}
+                          className={
+                            idx % 2 === 0 ? "bg-white" : "bg-gray-50"
+                          }
+                        >
+                          <td className="px-2 py-1 align-top">
+                            <div className="font-medium">
+                              {row.item || "Item"}
+                            </div>
+                            {row.notes && (
+                              <div className="text-[10px] text-gray-500">
+                                {row.notes}
+                              </div>
+                            )}
+                          </td>
+                          <td className="px-2 py-1 text-right align-top">
+                            {row.estimated_cost_ex_gst !== undefined &&
+                            row.estimated_cost_ex_gst !== null
+                              ? formatMoney(
+                                  row.estimated_cost_ex_gst,
+                                  pricing.currency
+                                )
+                              : "N/A"}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div>
+                <h4 className="text-sm font-semibold mb-1">
+                  Market Benchmarks (Melbourne)
+                </h4>
+                <ul className="list-disc list-inside text-[11px] text-gray-700 space-y-0.5">
+                  {safeArr(
+                    pricing.breakdown.market_benchmarks
+                  ).map((line: string, idx: number) => (
+                    <li key={idx}>{line}</li>
+                  ))}
+                </ul>
+              </div>
+            </div>
           </div>
         </div>
       )}
