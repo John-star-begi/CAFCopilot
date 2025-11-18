@@ -11,55 +11,72 @@ export async function POST(req: Request) {
       );
     }
 
-    // Build Gemini Vision-compatible message
+    // Build multimodal Gemini format EXACTLY as required
     const messages = [
       {
         role: "system",
         content: `
-You are the CLASS A FIX VISION RECON BRAIN.
-Your ONLY job is objective reconnaissance.
+You are the CLASS A FIX VISION RECON BRAIN for a property maintenance company.
 
-STRICT RULES:
-- Only visible details
-- No diagnosis
-- No causes
-- No repair suggestions
-- No assumptions
-- No filler wording
+Your ONLY job is objective reconnaissance of the images provided.
 
-Return STRICT JSON ONLY:
+You do NOT:
+- diagnose causes
+- suggest repairs
+- assume anything not explicitly visible
+- mention things outside the image frame
+- generate extra commentary
+- use adjectives that imply severity unless explicitly visible
+
+You MUST return STRICT JSON ONLY with the following structure exactly:
+
 {
-  "vision_summary": "...",
-  "objects": [...],
-  "hazards": [...],
-  "visible_damage": { ... },
-  "materials": { ... },
-  "labels_or_text": [...],
-  "measurements": { ... },
-  "location_hint": "..."
+  "vision_summary": "One short objective paragraph describing what is visible.",
+  "objects": ["list all notable visible objects or fixtures"],
+  "hazards": ["anything that may pose a risk"],
+  "visible_damage": {
+    "cracks": ["list or describe visible cracks"],
+    "holes": ["holes or penetrations"],
+    "water_damage": ["stains, mould, discoloration"],
+    "electrical": ["exposed wires, broken outlets"],
+    "plumbing": ["leaks, pipes, moisture"],
+    "other": ["any visible damage not in categories above"]
+  },
+  "materials": {
+    "walls": "material if clearly visible",
+    "floors": "material if clearly visible",
+    "fixtures": ["materials of fixtures if visible"]
+  },
+  "labels_or_text": ["any visible writing, labels, stickers"],
+  "measurements": {
+    "relative_size": "very rough relative scale if possible",
+    "count_items": "count visible fixtures or repeated elements"
+  },
+  "location_hint": "best guess where this could be (bathroom, kitchen, exterior) ONLY if clearly visible"
 }
+
+ONLY output JSON. No backticks, no commentary, no explanation.
+
 `
       },
       {
         role: "user",
         content: [
           {
-            type: "input_text",
+            type: "text",
             text:
               context ||
-              "Describe everything visible in the images objectively."
+              "Describe everything visible with strict objectivity only and output JSON only."
           },
-
-          // Attach all images correctly for Gemini
-          ...media.map((item: any) => ({
-            type: "input_image",
-            image_url: item.url
+          ...media.map((m: any) => ({
+            type: "image_url",
+            image_url: m.url
           }))
         ]
       }
     ];
 
-    // Call OpenRouter AI
+    // Call OpenRouter
     const response = await fetch(
       "https://openrouter.ai/api/v1/chat/completions",
       {
@@ -71,67 +88,33 @@ Return STRICT JSON ONLY:
         body: JSON.stringify({
           model: "google/gemini-2.0-flash-vision",
           messages,
-          max_tokens: 5000,
-          temperature: 0.1,
-          bias: {
-            "```": -5,
-            "`": -2
-          }
+          max_tokens: 4000,
+          temperature: 0.1
         })
       }
     );
 
     const data = await response.json();
+    let content = data?.choices?.[0]?.message?.content || "";
 
-    let content =
-      data?.choices?.[0]?.message?.content?.trim() || "";
-
-    // -------------------------------
-    // CLEAN GARBAGE BEFORE JSON
-    // -------------------------------
-    // Remove markdown fences
-    content = content
-      .replace(/```json/gi, "")
-      .replace(/```/g, "")
-      .replace(/^\s*Here.*?:/gi, "")
-      .replace(/^\s*JSON:/gi, "")
-      .replace(/^\s*Result:/gi, "")
-      .replace(/\uFEFF/g, "")
-      .trim();
-
-    // Remove anything BEFORE the first '{'
-    if (content.includes("{")) {
-      content = content.substring(content.indexOf("{"));
-    }
-
-    // Remove anything AFTER the final '}'
-    if (content.lastIndexOf("}") !== -1) {
-      content = content.substring(0, content.lastIndexOf("}") + 1);
-    }
-
-    // Try to parse JSON
-    let parsed;
-    try {
-      parsed = JSON.parse(content);
-    } catch (err) {
-      console.error("❌ FAILED RAW CONTENT");
-      console.error(content);
-
+    // If response is empty -> return error
+    if (!content || content.trim().length === 0) {
       return NextResponse.json(
-        {
-          error: "Invalid JSON from Vision model.",
-          raw: content
-        },
+        { error: "Gemini returned empty content. Likely invalid image payload." },
         { status: 500 }
       );
     }
 
-    return NextResponse.json(parsed);
-  } catch (err: any) {
-    console.error(err);
-    return NextResponse.json(
-      { error: err?.message || "Vision analysis failed." },
-      { status: 500 }
-    );
-  }
-}
+    // Strip markdown fences
+    content = content
+      .replace(/```json/gi, "")
+      .replace(/```/g, "")
+      .trim();
+
+    // Extract JSON only
+    const firstBrace = content.indexOf("{");
+    const lastBrace = content.lastIndexOf("}");
+
+    if (firstBrace === -1 || lastBrace === -1) {
+      return NextResponse.json(
+        { er
