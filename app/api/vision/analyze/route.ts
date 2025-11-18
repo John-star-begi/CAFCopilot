@@ -11,7 +11,9 @@ export async function POST(req: Request) {
       );
     }
 
-    // Build multimodal Gemini format EXACTLY as required
+    // -----------------------------
+    // BUILD CORRECT MULTIMODAL FORMAT FOR GEMINI
+    // -----------------------------
     const messages = [
       {
         role: "system",
@@ -25,10 +27,10 @@ You do NOT:
 - suggest repairs
 - assume anything not explicitly visible
 - mention things outside the image frame
-- generate extra commentary
-- use adjectives that imply severity unless explicitly visible
+- generate commentary
+- add markdown or code fences
 
-You MUST return STRICT JSON ONLY with the following structure exactly:
+You MUST return STRICT JSON ONLY with the structure:
 
 {
   "vision_summary": "One short objective paragraph describing what is visible.",
@@ -40,23 +42,22 @@ You MUST return STRICT JSON ONLY with the following structure exactly:
     "water_damage": ["stains, mould, discoloration"],
     "electrical": ["exposed wires, broken outlets"],
     "plumbing": ["leaks, pipes, moisture"],
-    "other": ["any visible damage not in categories above"]
+    "other": ["any visible damage not listed above"]
   },
   "materials": {
     "walls": "material if clearly visible",
     "floors": "material if clearly visible",
     "fixtures": ["materials of fixtures if visible"]
   },
-  "labels_or_text": ["any visible writing, labels, stickers"],
+  "labels_or_text": ["any visible writing or labels"],
   "measurements": {
     "relative_size": "very rough relative scale if possible",
-    "count_items": "count visible fixtures or repeated elements"
+    "count_items": "count visible repeated fixtures or elements"
   },
-  "location_hint": "best guess where this could be (bathroom, kitchen, exterior) ONLY if clearly visible"
+  "location_hint": "best guess where this is (bathroom, kitchen, exterior) ONLY if clearly visible"
 }
 
-ONLY output JSON. No backticks, no commentary, no explanation.
-
+Return ONLY JSON. Never wrap in backticks. Never write explanations.
 `
       },
       {
@@ -66,17 +67,19 @@ ONLY output JSON. No backticks, no commentary, no explanation.
             type: "text",
             text:
               context ||
-              "Describe everything visible with strict objectivity only and output JSON only."
+              "Describe everything visible objectively and output strict JSON only."
           },
-          ...media.map((m: any) => ({
+          ...media.map((item: any) => ({
             type: "image_url",
-            image_url: m.url
+            image_url: item.url
           }))
         ]
       }
     ];
 
-    // Call OpenRouter
+    // -----------------------------
+    // CALL OPENROUTER API
+    // -----------------------------
     const response = await fetch(
       "https://openrouter.ai/api/v1/chat/completions",
       {
@@ -88,7 +91,7 @@ ONLY output JSON. No backticks, no commentary, no explanation.
         body: JSON.stringify({
           model: "google/gemini-2.0-flash-vision",
           messages,
-          max_tokens: 4000,
+          max_tokens: 6000,
           temperature: 0.1
         })
       }
@@ -97,24 +100,71 @@ ONLY output JSON. No backticks, no commentary, no explanation.
     const data = await response.json();
     let content = data?.choices?.[0]?.message?.content || "";
 
-    // If response is empty -> return error
+    // If response is empty => model rejected image format
     if (!content || content.trim().length === 0) {
       return NextResponse.json(
-        { error: "Gemini returned empty content. Likely invalid image payload." },
+        {
+          error:
+            "Gemini returned empty content. Image payload format may be rejected.",
+          raw: content
+        },
         { status: 500 }
       );
     }
 
-    // Strip markdown fences
+    // -----------------------------
+    // CLEAN GARBAGE BEFORE JSON
+    // -----------------------------
+    // Strip markdown code fences
     content = content
       .replace(/```json/gi, "")
       .replace(/```/g, "")
+      .replace(/^\s*Here.*?:/gi, "")
+      .replace(/^\s*JSON:/gi, "")
+      .replace(/^\s*Output:/gi, "")
+      .replace(/^\s*Result:/gi, "")
+      .replace(/\uFEFF/g, "")
       .trim();
 
-    // Extract JSON only
+    // Remove everything before the first '{'
     const firstBrace = content.indexOf("{");
-    const lastBrace = content.lastIndexOf("}");
+    if (firstBrace > 0) {
+      content = content.substring(firstBrace);
+    }
 
-    if (firstBrace === -1 || lastBrace === -1) {
+    // Remove everything after last '}'
+    const lastBrace = content.lastIndexOf("}");
+    if (lastBrace > 0) {
+      content = content.substring(0, lastBrace + 1);
+    }
+
+    // -----------------------------
+    // PARSE JSON
+    // -----------------------------
+    let parsed;
+    try {
+      parsed = JSON.parse(content);
+    } catch (err) {
+      console.error("FAILED RAW CONTENT:");
+      console.error(content);
+
       return NextResponse.json(
-        { er
+        {
+          error:
+            "Gemini returned content but it was not valid JSON after cleanup.",
+          raw: content
+        },
+        { status: 500 }
+      );
+    }
+
+    // Success
+    return NextResponse.json(parsed);
+  } catch (err: any) {
+    console.error("Vision Route Error:", err);
+    return NextResponse.json(
+      { error: err?.message || "Vision analysis failed." },
+      { status: 500 }
+    );
+  }
+}
