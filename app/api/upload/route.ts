@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 
-export const runtime = "edge";
+export const runtime = "edge"; // Fast and safe for uploads
 
 export async function POST(req: Request) {
   try {
@@ -15,38 +15,45 @@ export async function POST(req: Request) {
       );
     }
 
+    // Read uploaded file
     const arrayBuffer = await req.arrayBuffer();
-    const fileBuffer = new Uint8Array(arrayBuffer);
+    const fileBytes = new Uint8Array(arrayBuffer);
 
-    // Upload to Supabase Storage bucket "cases"
-    const path = `${Date.now()}-${filename}`;
+    // Determine extension
+    const extension = filename.split(".").pop() || "jpg";
 
+    // Unique file path inside bucket
+    const path = `uploads/${Date.now()}-${Math.random()
+      .toString(36)
+      .slice(2)}.${extension}`;
+
+    // Upload to Supabase bucket "cases"
     const { data, error } = await supabase.storage
       .from("cases")
-      .upload(path, fileBuffer, {
-        contentType: "image/jpeg",
+      .upload(path, fileBytes, {
+        contentType: `image/${extension}`,
         upsert: false,
       });
 
     if (error) {
-      console.error(error);
+      console.error("SUPABASE UPLOAD ERROR", error);
       return NextResponse.json(
-        { error: "Upload failed" },
+        { error: "Upload failed: " + error.message },
         { status: 500 }
       );
     }
 
-    // Public URL
+    // Retrieve Public URL
     const {
       data: { publicUrl },
     } = supabase.storage.from("cases").getPublicUrl(path);
 
     return NextResponse.json({
       url: publicUrl,
-      contentType: "image/jpeg",
+      contentType: `image/${extension}`,
     });
   } catch (err: any) {
-    console.error("UPLOAD ERROR", err);
+    console.error("UPLOAD ROUTE ERROR", err);
     return NextResponse.json(
       { error: err?.message || "Upload failed" },
       { status: 500 }
