@@ -11,14 +11,7 @@ export async function POST(req: Request) {
       );
     }
 
-    // Convert images safely
-    const images = media
-      .filter((m: any) => typeof m?.url === "string")
-      .map((item: any) => ({
-        type: "input_image",
-        image_url: item.url,
-      }));
-
+    // Build Gemini Vision-compatible message
     const messages = [
       {
         role: "system",
@@ -32,6 +25,7 @@ STRICT RULES:
 - No causes
 - No repair suggestions
 - No assumptions
+- No filler wording
 
 Return STRICT JSON ONLY:
 {
@@ -48,37 +42,54 @@ Return STRICT JSON ONLY:
       },
       {
         role: "user",
-        content:
-          context ||
-          "Describe everything visible with maximum objectivity.",
-      },
-      ...images,
+        content: [
+          {
+            type: "input_text",
+            text:
+              context ||
+              "Describe everything visible in the images objectively."
+          },
+
+          // Attach all images correctly for Gemini
+          ...media.map((item: any) => ({
+            type: "input_image",
+            image_url: item.url
+          }))
+        ]
+      }
     ];
 
-    // Call OpenRouter
+    // Call OpenRouter AI
     const response = await fetch(
       "https://openrouter.ai/api/v1/chat/completions",
       {
         method: "POST",
         headers: {
           Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
-          "Content-Type": "application/json",
+          "Content-Type": "application/json"
         },
         body: JSON.stringify({
           model: "google/gemini-2.0-flash-vision",
           messages,
+          max_tokens: 5000,
+          temperature: 0.1,
           bias: {
             "```": -5,
-            "`": -2,
-          },
-        }),
+            "`": -2
+          }
+        })
       }
     );
 
     const data = await response.json();
-    let content = data?.choices?.[0]?.message?.content || "";
 
-    // Clean markdown formatting that models often include
+    let content =
+      data?.choices?.[0]?.message?.content?.trim() || "";
+
+    // -------------------------------
+    // CLEAN GARBAGE BEFORE JSON
+    // -------------------------------
+    // Remove markdown fences
     content = content
       .replace(/```json/gi, "")
       .replace(/```/g, "")
@@ -88,22 +99,36 @@ Return STRICT JSON ONLY:
       .replace(/\uFEFF/g, "")
       .trim();
 
+    // Remove anything BEFORE the first '{'
+    if (content.includes("{")) {
+      content = content.substring(content.indexOf("{"));
+    }
+
+    // Remove anything AFTER the final '}'
+    if (content.lastIndexOf("}") !== -1) {
+      content = content.substring(0, content.lastIndexOf("}") + 1);
+    }
+
     // Try to parse JSON
     let parsed;
     try {
       parsed = JSON.parse(content);
     } catch (err) {
-      console.error("❌ JSON PARSE FAILED — RAW OUTPUT BELOW:");
+      console.error("❌ FAILED RAW CONTENT");
       console.error(content);
 
       return NextResponse.json(
-        { error: "Invalid JSON from Vision model.", raw: content },
+        {
+          error: "Invalid JSON from Vision model.",
+          raw: content
+        },
         { status: 500 }
       );
     }
 
     return NextResponse.json(parsed);
   } catch (err: any) {
+    console.error(err);
     return NextResponse.json(
       { error: err?.message || "Vision analysis failed." },
       { status: 500 }
