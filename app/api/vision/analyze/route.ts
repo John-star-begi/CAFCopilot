@@ -1,56 +1,3 @@
-Your cleaning handles some cases, but NOT all.
-
-We need to clean:
-
-- ```json  
-- ```  
-- \`  
-- “Here is your result:”  
-- Newlines before or after JSON  
-- Invisible UTF BOM bytes  
-- Models that wrap inside **markdown code blocks + text**  
-- Models that return arrays as `"objects": "[]"` (string instead of array)
-
----
-
-### **2. If JSON parsing fails, you currently crash the whole endpoint**
-
-We need to:
-
-- Catch invalid JSON  
-- Return a readable error to user  
-- Log the raw output in console  
-
----
-
-### **3. You did not enforce token bias preventing “```”**
-
-We can add token bias to discourage markdown formatting.
-
----
-
-### **4. You allow `media.url` without checking for `.url` attribute**
-
-We can tighten this.
-
----
-
-# ✅ **Here is the FINAL FIXED version (copy + paste)**
-
-This version is:
-
-✔ Bulletproof JSON parsing  
-✔ Bulletproof code-block removal  
-✔ Logs raw content on parse error  
-✔ Safe typing for media  
-✔ Token bias to reduce formatting  
-✔ Works with ANY LLM that tries to be cute and write markdown  
-
----
-
-# 🔥 **FINAL: `/api/vision/analyze/route.ts`**
-
-```ts
 import { NextResponse } from "next/server";
 
 export async function POST(req: Request) {
@@ -64,7 +11,7 @@ export async function POST(req: Request) {
       );
     }
 
-    // Convert images
+    // Convert images safely
     const images = media
       .filter((m: any) => typeof m?.url === "string")
       .map((item: any) => ({
@@ -101,52 +48,48 @@ Return STRICT JSON ONLY:
       },
       {
         role: "user",
-        content: context || "Describe everything visible with maximum objectivity."
+        content:
+          context ||
+          "Describe everything visible with maximum objectivity.",
       },
       ...images,
     ];
 
     // Call OpenRouter
-    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "google/gemini-2.0-flash-vision",
-        messages,
-        //
-        // Token bias to discourage code fences
-        //
-        bias: {
-          "```": -5,
-          "`": -2
-        }
-      }),
-    });
+    const response = await fetch(
+      "https://openrouter.ai/api/v1/chat/completions",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "google/gemini-2.0-flash-vision",
+          messages,
+          bias: {
+            "```": -5,
+            "`": -2,
+          },
+        }),
+      }
+    );
 
     const data = await response.json();
-
     let content = data?.choices?.[0]?.message?.content || "";
 
-    //
-    // CLEAN JSON — handles ALL weird cases
-    //
+    // Clean markdown formatting that models often include
     content = content
       .replace(/```json/gi, "")
       .replace(/```/g, "")
-      .replace(/^\s*Here.*?:/gi, "")      // remove "Here is your JSON:"
+      .replace(/^\s*Here.*?:/gi, "")
       .replace(/^\s*JSON:/gi, "")
       .replace(/^\s*Result:/gi, "")
-      .replace(/\uFEFF/g, "")             // remove BOM bytes
+      .replace(/\uFEFF/g, "")
       .trim();
 
-    //
-    // Attempt to parse the cleaned JSON
-    //
-    let parsed: any;
-
+    // Try to parse JSON
+    let parsed;
     try {
       parsed = JSON.parse(content);
     } catch (err) {
@@ -160,7 +103,6 @@ Return STRICT JSON ONLY:
     }
 
     return NextResponse.json(parsed);
-
   } catch (err: any) {
     return NextResponse.json(
       { error: err?.message || "Vision analysis failed." },
