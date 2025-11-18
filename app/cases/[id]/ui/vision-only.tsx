@@ -3,6 +3,9 @@
 import { useState, useRef } from "react";
 import { supabase } from "@/lib/supabase";
 
+//
+// TYPES
+//
 type MediaItem = {
   url: string;
   contentType?: string;
@@ -19,16 +22,24 @@ type VisionRecon = {
   location_hint?: string;
 };
 
-export default function VisionOnlyWorkspace({
-  caseData,
-}: {
-  caseData: any;
-}) {
+type VisionOnlyProps = {
+  caseData: {
+    id: string;
+    description?: string;
+    media?: MediaItem[];
+    vision?: VisionRecon;
+  };
+};
+
+//
+// COMPONENT
+//
+export default function VisionOnlyWorkspace({ caseData }: VisionOnlyProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  // ----------------------
+  //
   // STATE
-  // ----------------------
+  //
   const [media, setMedia] = useState<MediaItem[]>(caseData.media || []);
   const [visionContext, setVisionContext] = useState(
     caseData.description
@@ -49,13 +60,21 @@ export default function VisionOnlyWorkspace({
   const [uploading, setUploading] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
 
-  // ----------------------
-  // UPLOAD HANDLER
-  // ----------------------
+  //
+  // HELPERS
+  //
+  const safeArray = (value: any): string[] => {
+    return Array.isArray(value) ? value : [];
+  };
+
+  //
+  // UPLOAD HANDLER (✓ Supabase)
+  //
   const uploadFiles = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
 
     setUploading(true);
+
     try {
       const uploaded: MediaItem[] = [];
 
@@ -66,7 +85,11 @@ export default function VisionOnlyWorkspace({
         );
 
         const data = await res.json();
-        if (!res.ok) continue;
+
+        if (!res.ok) {
+          console.warn("Upload failed for file", file.name);
+          continue;
+        }
 
         uploaded.push({
           url: data.url,
@@ -78,22 +101,25 @@ export default function VisionOnlyWorkspace({
         const newMedia = [...media, ...uploaded];
         setMedia(newMedia);
 
+        // Save to Supabase
         await supabase
           .from("cases")
           .update({ media: newMedia })
           .eq("id", caseData.id);
       }
+    } catch (err) {
+      console.error("UPLOAD ERROR", err);
     } finally {
       setUploading(false);
     }
   };
 
-  // ----------------------
-  // RUN VISION
-  // ----------------------
+  //
+  // RUN VISION ANALYSIS
+  //
   const runVision = async () => {
     if (media.length === 0) {
-      alert("Upload at least one image.");
+      alert("Upload at least one image first.");
       return;
     }
 
@@ -104,7 +130,10 @@ export default function VisionOnlyWorkspace({
       const res = await fetch("/api/vision/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ context: visionContext, media }),
+        body: JSON.stringify({
+          context: visionContext,
+          media,
+        }),
       });
 
       const data = await res.json();
@@ -117,26 +146,22 @@ export default function VisionOnlyWorkspace({
       setVisionRecon(data);
       setVisionRaw(JSON.stringify(data, null, 2));
 
+      // Save to case
       await supabase
         .from("cases")
         .update({ vision: data, status: "visioned" })
         .eq("id", caseData.id);
     } catch (err: any) {
+      console.error(err);
       setVisionError(err?.message || "Unknown error occurred.");
     } finally {
       setVisionLoading(false);
     }
   };
 
-  // ----------------------
-  // SAFE ARRAY UTIL
-  // ----------------------
-  const safeArray = (value: any): string[] =>
-    Array.isArray(value) ? value : [];
-
-  // ----------------------
+  //
   // UI
-  // ----------------------
+  //
   return (
     <section className="mt-6 border rounded-xl p-6 bg-white space-y-6">
       <h2 className="text-xl font-semibold">Vision Analysis</h2>
@@ -144,12 +169,14 @@ export default function VisionOnlyWorkspace({
         Upload images and generate a visual maintenance report.
       </p>
 
-      {/* UPLOAD */}
+      {/* --------------------------------------------
+          UPLOAD AREA
+      --------------------------------------------- */}
       <div>
         <h3 className="text-sm font-semibold mb-2">Upload Images</h3>
 
         <div
-          className={`border-2 border-dashed rounded-lg p-6 text-center transition cursor-pointer ${
+          className={`border-2 border-dashed rounded-lg p-6 text-center cursor-pointer transition ${
             isDragging
               ? "border-blue-500 bg-blue-50"
               : "border-gray-300 bg-gray-50"
@@ -182,13 +209,13 @@ export default function VisionOnlyWorkspace({
         {uploading && <p className="text-xs mt-1">Uploading...</p>}
 
         {media.length > 0 && (
-          <ul className="mt-2 text-xs space-y-1">
+          <ul className="mt-3 text-xs space-y-1">
             {media.map((m, i) => (
               <li key={i}>
                 <a
                   href={m.url}
                   target="_blank"
-                  className="text-blue-600 underline"
+                  className="underline text-blue-600"
                 >
                   Image {i + 1}
                 </a>
@@ -198,7 +225,9 @@ export default function VisionOnlyWorkspace({
         )}
       </div>
 
-      {/* CONTEXT */}
+      {/* --------------------------------------------
+          CONTEXT INPUT
+      --------------------------------------------- */}
       <div>
         <h3 className="text-sm font-semibold mb-1">Vision Context</h3>
         <textarea
@@ -221,16 +250,16 @@ export default function VisionOnlyWorkspace({
         <p className="text-sm text-red-600">{visionError}</p>
       )}
 
-      {/* ------------------------
+      {/* --------------------------------------------
           OUTPUT
-      ------------------------ */}
+      --------------------------------------------- */}
       {visionRecon && (
-        <div className="mt-6 space-y-6 border-t pt-4">
+        <div className="mt-6 border-t pt-4 space-y-6">
           {/* SUMMARY */}
           <div>
             <h3 className="text-sm font-semibold mb-1">Vision Summary</h3>
             <p className="text-sm text-gray-800">
-              {visionRecon.vision_summary || "No summary provided."}
+              {visionRecon.vision_summary || "No summary generated."}
             </p>
           </div>
 
@@ -253,9 +282,7 @@ export default function VisionOnlyWorkspace({
 
           {/* RAW JSON */}
           <div>
-            <h3 className="text-sm font-semibold mb-1">
-              Raw Vision JSON (editable)
-            </h3>
+            <h3 className="text-sm font-semibold mb-1">Raw Vision JSON</h3>
             <textarea
               value={visionRaw}
               onChange={(e) => setVisionRaw(e.target.value)}
