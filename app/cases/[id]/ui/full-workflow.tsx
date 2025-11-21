@@ -1,7 +1,12 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { supabase } from "@/lib/supabase";
+
+// Simple constants for now, later will come from admin panel
+const DEFAULT_HOURLY_RATE = 100; // per hour, ex GST
+const DEFAULT_ATTENDANCE_FEE = 60; // per job
+const CAF_MARKUP = 0.2; // 20 percent
 
 type MediaItem = {
   url: string;
@@ -17,12 +22,9 @@ type TriageResult = {
   questions_tenant?: string[];
 };
 
-type QuestionTarget = "dispatcher" | "tenant" | "general";
-
 type QuestionItem = {
   id: string;
   question: string;
-  target: QuestionTarget;
 };
 
 type VisionRecon = {
@@ -45,6 +47,7 @@ type FinalDiagnosisItem = {
   safety_concerns: string[];
   trade_required: string;
   repair_steps: string[];
+  materials_needed: string[];
   estimated_labor_minutes: number;
   estimated_material_cost: number;
 };
@@ -55,34 +58,15 @@ type FinalDiagnosisResult = {
 
 type PricingResponse = {
   currency: string;
-
   fair_range_low: number;
   fair_range_high: number;
-
   subcontractor_quote_incl_gst: number | null;
-  position_vs_market:
-    | "below_range"
-    | "lower_mid_range"
-    | "mid_range"
-    | "upper_mid_range"
-    | "above_range"
-    | "n/a"
-    | string;
-
+  position_vs_market: string;
   recommended_markup_percent: number;
   recommended_markup_amount: number;
   caf_recommended_sell_price: number;
-  caf_position_after_markup:
-    | "below_range"
-    | "lower_mid_range"
-    | "mid_range"
-    | "upper_mid_range"
-    | "above_range"
-    | "n/a"
-    | string;
-
+  caf_position_after_markup: string;
   should_negotiate_or_change_subbie: boolean;
-
   breakdown: {
     scope_summary: string;
     baseline_costs: {
@@ -135,10 +119,13 @@ export default function FullWorkflowWorkspace({ caseData }: { caseData: any }) {
     null
   );
 
-  // Pricing (single latest pricing object, same as pricing only tool)
+  // Market pricing brain response
   const [pricing, setPricing] = useState<PricingResponse | null>(
     caseData.pricing || null
   );
+
+  // Modal state
+  const [pricingModalOpen, setPricingModalOpen] = useState(false);
 
   // UI
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({
@@ -159,32 +146,29 @@ export default function FullWorkflowWorkspace({ caseData }: { caseData: any }) {
     setOpenSections((prev) => ({ ...prev, [key]: !prev[key] }));
   };
 
-  // ------------ Helpers ------------
+  // Build initial questions and answers if triage already exists on first load
+  useEffect(() => {
+    if (triage && questions.length === 0) {
+      const qs = buildQuestionsFromTriage(triage);
+      setQuestions(qs);
+      setAnswers(buildInitialAnswers(qs));
+    }
+  }, [triage, questions.length]);
+
+  // Helpers
 
   const buildQuestionsFromTriage = (t: TriageResult): QuestionItem[] => {
     const items: QuestionItem[] = [];
+    const all: string[] = [
+      ...(t.questions || []),
+      ...(t.questions_dispatcher || []),
+      ...(t.questions_tenant || []),
+    ];
 
-    (t.questions || []).forEach((q, idx) => {
+    all.forEach((q, idx) => {
       items.push({
-        id: `general_${idx}`,
+        id: `q_${idx}`,
         question: q,
-        target: "general",
-      });
-    });
-
-    (t.questions_dispatcher || []).forEach((q, idx) => {
-      items.push({
-        id: `dispatcher_${idx}`,
-        question: q,
-        target: "dispatcher",
-      });
-    });
-
-    (t.questions_tenant || []).forEach((q, idx) => {
-      items.push({
-        id: `tenant_${idx}`,
-        question: q,
-        target: "tenant",
       });
     });
 
@@ -200,12 +184,11 @@ export default function FullWorkflowWorkspace({ caseData }: { caseData: any }) {
   };
 
   const generateTenantMessage = (qs: QuestionItem[]): string => {
-    const tenantQs = qs.filter((q) => q.target === "tenant");
-    if (tenantQs.length === 0) return "Nothing needed from tenant.";
+    if (qs.length === 0) return "Nothing needed from tenant.";
 
-    const unanswered = tenantQs.filter((q) => {
-      const ans = answers[q.id];
-      return !ans || ans === "I_DONT_KNOW";
+    const unanswered = qs.filter((q) => {
+      const value = answers[q.id];
+      return !value || value === "I_DONT_KNOW";
     });
 
     if (unanswered.length === 0) {
@@ -224,7 +207,7 @@ export default function FullWorkflowWorkspace({ caseData }: { caseData: any }) {
   const tenantMessage =
     questions.length > 0 ? generateTenantMessage(questions) : "";
 
-  // ------------ Step 1: Triage ------------
+  // Step 1: Triage
 
   const runTriage = async () => {
     try {
@@ -268,7 +251,7 @@ export default function FullWorkflowWorkspace({ caseData }: { caseData: any }) {
     }
   };
 
-  // ------------ Media upload + Vision ------------
+  // Media upload
 
   const uploadFiles = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
@@ -277,11 +260,14 @@ export default function FullWorkflowWorkspace({ caseData }: { caseData: any }) {
 
     for (const file of Array.from(files)) {
       try {
+        const formData = new FormData();
+        formData.append("file", file);
+
         const res = await fetch(
           `/api/upload?filename=${encodeURIComponent(file.name)}`,
           {
             method: "POST",
-            body: file,
+            body: formData,
           }
         );
 
@@ -310,6 +296,8 @@ export default function FullWorkflowWorkspace({ caseData }: { caseData: any }) {
       .update({ media: merged })
       .eq("id", caseData.id);
   };
+
+  // Step 2: Vision
 
   const runVision = async () => {
     try {
@@ -348,7 +336,7 @@ export default function FullWorkflowWorkspace({ caseData }: { caseData: any }) {
     }
   };
 
-  // ------------ Step 3: Final diagnosis ------------
+  // Step 3: Final diagnosis
 
   const runFinalDiagnosis = async () => {
     if (!triage) {
@@ -361,21 +349,17 @@ export default function FullWorkflowWorkspace({ caseData }: { caseData: any }) {
       setFinalDiag(null);
       setSelectedDiagIndex(null);
 
-      // Split answers into dispatcher / tenant based on question target
       const dispatcher_answers: Record<string, string> = {};
       const tenant_answers: Record<string, string> = {};
 
       questions.forEach((q) => {
         const value = answers[q.id];
         if (!value) return;
-
-        if (q.target === "tenant") {
-          tenant_answers[q.question] = value;
-        } else {
-          dispatcher_answers[q.question] = value;
-        }
+        // For now all are general. We keep dispatcher and tenant groups separate for the prompt.
+        dispatcher_answers[q.question] = value;
       });
 
+      // Tenant text is free context
       if (tenantText.trim()) {
         tenant_answers["free_text"] = tenantText.trim();
       }
@@ -427,19 +411,22 @@ export default function FullWorkflowWorkspace({ caseData }: { caseData: any }) {
     }
   };
 
-  // ------------ Step 4: Pricing ------------
+  // Step 4: Market pricing brain, triggered inside modal
 
-  const runPricingForDiagnosis = async (idx: number) => {
-    if (!finalDiag || !finalDiag.diagnoses || !finalDiag.diagnoses[idx]) {
+  const runMarketPricingBrain = async () => {
+    if (
+      !finalDiag ||
+      selectedDiagIndex == null ||
+      !finalDiag.diagnoses[selectedDiagIndex]
+    ) {
       alert("No diagnosis selected for pricing.");
       return;
     }
 
-    const diag = finalDiag.diagnoses[idx];
+    const diag = finalDiag.diagnoses[selectedDiagIndex];
 
     try {
       setLoading((prev) => ({ ...prev, pricing: true }));
-      setPricing(null);
 
       const res = await fetch("/api/triage/pricing", {
         method: "POST",
@@ -463,7 +450,6 @@ export default function FullWorkflowWorkspace({ caseData }: { caseData: any }) {
       }
 
       setPricing(data as PricingResponse);
-      setSelectedDiagIndex(idx);
 
       await supabase
         .from("cases")
@@ -477,7 +463,38 @@ export default function FullWorkflowWorkspace({ caseData }: { caseData: any }) {
     }
   };
 
-  // ------------ Render helpers ------------
+  // Simple internal CAF pricing calculation
+
+  const getSimplePricing = (diag: FinalDiagnosisItem | null) => {
+    if (!diag) return null;
+
+    const labourHours = diag.estimated_labor_minutes / 60;
+    const labourCost = labourHours * DEFAULT_HOURLY_RATE;
+    const materialsCost = diag.estimated_material_cost;
+    const attendanceCost = DEFAULT_ATTENDANCE_FEE;
+
+    const subbieBaseline =
+      labourCost + materialsCost + attendanceCost;
+
+    const cafFinal = subbieBaseline * (1 + CAF_MARKUP);
+
+    return {
+      labourCost,
+      materialsCost,
+      attendanceCost,
+      subbieBaseline,
+      cafFinal,
+    };
+  };
+
+  const openPricingModal = (idx: number) => {
+    setSelectedDiagIndex(idx);
+    setPricingModalOpen(true);
+  };
+
+  const closePricingModal = () => {
+    setPricingModalOpen(false);
+  };
 
   const renderHazardBadges = (hazards?: string[]) => {
     if (!hazards || hazards.length === 0) return null;
@@ -500,7 +517,7 @@ export default function FullWorkflowWorkspace({ caseData }: { caseData: any }) {
       ? finalDiag.diagnoses[selectedDiagIndex]
       : null;
 
-  // ------------ UI ------------
+  const simplePricing = getSimplePricing(selectedDiagnosis);
 
   return (
     <div className="space-y-8">
@@ -522,7 +539,7 @@ export default function FullWorkflowWorkspace({ caseData }: { caseData: any }) {
           onClick={() => toggleSection("triage")}
           className="w-full text-left text-lg font-semibold"
         >
-          Step 1 — AI Triage
+          Step 1: AI Triage
         </button>
 
         {openSections.triage && (
@@ -559,19 +576,16 @@ export default function FullWorkflowWorkspace({ caseData }: { caseData: any }) {
 
             {questions.length > 0 && (
               <div className="space-y-3">
-                <h3 className="text-sm font-semibold">Clarification questions</h3>
+                <h3 className="text-sm font-semibold">
+                  Clarification questions
+                </h3>
 
                 {questions.map((q) => (
                   <div
                     key={q.id}
                     className="border p-3 rounded-md bg-gray-50 space-y-1"
                   >
-                    <div className="flex items-center justify_between gap-2">
-                      <p className="text-sm font-medium">{q.question}</p>
-                      <span className="text-xs text-gray-500">
-                        {q.target}
-                      </span>
-                    </div>
+                    <p className="text-sm font-medium">{q.question}</p>
                     <input
                       className="mt-1 w-full border rounded p-2 text-sm"
                       value={answers[q.id] || ""}
@@ -593,7 +607,7 @@ export default function FullWorkflowWorkspace({ caseData }: { caseData: any }) {
                       }
                       className="text-xs text-blue-600 underline mt-1"
                     >
-                      I don't know
+                      I do not know
                     </button>
                   </div>
                 ))}
@@ -628,9 +642,9 @@ export default function FullWorkflowWorkspace({ caseData }: { caseData: any }) {
         <button
           type="button"
           onClick={() => toggleSection("vision")}
-          className="w_full text_left text-lg font-semibold"
+          className="w-full text-left text-lg font-semibold"
         >
-          Step 2 — Vision Recon
+          Step 2: Vision Recon
         </button>
 
         {openSections.vision && (
@@ -671,7 +685,7 @@ export default function FullWorkflowWorkspace({ caseData }: { caseData: any }) {
 
             <div>
               <label className="text-sm font-semibold">
-                Vision context (sent to Gemini)
+                Vision context sent to Gemini
               </label>
               <textarea
                 className="w-full mt-1 border rounded p-3 text-sm"
@@ -715,7 +729,7 @@ export default function FullWorkflowWorkspace({ caseData }: { caseData: any }) {
 
             <div>
               <label className="text-xs font-semibold">
-                Raw vision JSON (editable if needed)
+                Raw vision JSON editable if needed
               </label>
               <textarea
                 className="w-full mt-1 border rounded p-2 text-xs font-mono"
@@ -728,14 +742,14 @@ export default function FullWorkflowWorkspace({ caseData }: { caseData: any }) {
         )}
       </section>
 
-      {/* Step 3: Final diagnosis + Step 4: Pricing */}
+      {/* Step 3 and 4: Final diagnosis and pricing */}
       <section className="bg-white p-5 border rounded-xl shadow-sm space-y-4">
         <button
           type="button"
           onClick={() => toggleSection("diagnosis")}
           className="w-full text-left text-lg font-semibold"
         >
-          Step 3 — Final diagnosis and pricing
+          Step 3: Final diagnosis and pricing
         </button>
 
         {openSections.diagnosis && (
@@ -759,16 +773,17 @@ export default function FullWorkflowWorkspace({ caseData }: { caseData: any }) {
                   return (
                     <div
                       key={idx}
-                      className={`border rounded-md p-4 bg-gray-50 space-y-2 ${
+                      className={`border rounded-md p-4 bg-gray-50 space-y-2 cursor-pointer ${
                         isSelected ? "border-slate-700" : ""
                       }`}
+                      onClick={() => openPricingModal(idx)}
                     >
                       <div className="flex items-center justify-between gap-2">
                         <h3 className="text-sm font-semibold">
                           {idx + 1}. {diag.title}
                         </h3>
                         <span className="text-xs text-gray-600">
-                          {diag.severity} — {diag.urgency_hours} hours
+                          {diag.severity} and {diag.urgency_hours} hours
                         </span>
                       </div>
 
@@ -777,7 +792,7 @@ export default function FullWorkflowWorkspace({ caseData }: { caseData: any }) {
                       </p>
 
                       <p className="text-xs text-gray-500">
-                        Confidence: {Math.round(diag.confidence * 100)}%
+                        Confidence: {Math.round(diag.confidence * 100)} percent
                       </p>
 
                       <p className="text-xs">
@@ -793,122 +808,12 @@ export default function FullWorkflowWorkspace({ caseData }: { caseData: any }) {
                           </p>
                         )}
 
-                      <details className="mt-2 text-xs">
-                        <summary className="cursor-pointer">
-                          Repair steps and estimates
-                        </summary>
-                        <div className="mt-2 space-y-1">
-                          <div>
-                            <span className="font-semibold">Steps:</span>
-                            <ul className="list-disc ml-5">
-                              {diag.repair_steps.map((s, i) => (
-                                <li key={i}>{s}</li>
-                              ))}
-                            </ul>
-                          </div>
-                          <p>
-                            Estimated labour: {diag.estimated_labor_minutes} min
-                          </p>
-                          <p>
-                            Estimated materials cost:{" "}
-                            {diag.estimated_material_cost.toFixed(2)} AUD
-                          </p>
-                        </div>
-                      </details>
-
-                      <div className="mt-3 flex items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={() => runPricingForDiagnosis(idx)}
-                          disabled={loading.pricing}
-                          className="bg-green-600 text-white text-xs px-3 py-2 rounded-md disabled:opacity-60"
-                        >
-                          {loading.pricing && isSelected
-                            ? "Calculating price..."
-                            : "Calculate CAF price"}
-                        </button>
-                        {isSelected && pricing && (
-                          <span className="text-xs text-gray-600">
-                            Last priced diagnosis
-                          </span>
-                        )}
-                      </div>
+                      <p className="text-xs text-gray-500 mt-2">
+                        Click to open pricing modal
+                      </p>
                     </div>
                   );
                 })}
-              </div>
-            )}
-
-            {pricing && selectedDiagnosis && (
-              <div className="mt-6 border rounded-md p-4 bg-gray-50 text-xs space-y-2">
-                <p className="text-sm font-semibold">
-                  CAF recommended sell price: {pricing.currency}{" "}
-                  {pricing.caf_recommended_sell_price.toFixed(2)}
-                </p>
-                <p>
-                  Market range: {pricing.currency}{" "}
-                  {pricing.fair_range_low.toFixed(2)} to{" "}
-                  {pricing.fair_range_high.toFixed(2)}
-                </p>
-                {typeof pricing.subcontractor_quote_incl_gst === "number" && (
-                  <p>
-                    Subbie quote (incl GST): {pricing.currency}{" "}
-                    {pricing.subcontractor_quote_incl_gst.toFixed(2)}
-                  </p>
-                )}
-                <p>Position vs market: {pricing.position_vs_market}</p>
-                <p>
-                  CAF position after markup: {pricing.caf_position_after_markup}
-                </p>
-                <p>
-                  Recommended markup:{" "}
-                  {pricing.recommended_markup_percent.toFixed(1)}% (
-                  {pricing.currency}{" "}
-                  {pricing.recommended_markup_amount.toFixed(2)})
-                </p>
-                {pricing.should_negotiate_or_change_subbie && (
-                  <p className="text-red-600 font-semibold">
-                    Suggest negotiating or changing subcontractor.
-                  </p>
-                )}
-
-                <details className="mt-2">
-                  <summary className="cursor-pointer">
-                    Pricing breakdown
-                  </summary>
-                  <div className="mt-2 space-y-2">
-                    <p>{pricing.breakdown.scope_summary}</p>
-                    <div>
-                      <p className="font-semibold text-xs">Baseline costs</p>
-                      <ul className="list-disc ml-5">
-                        {pricing.breakdown.baseline_costs.map((item, i) => (
-                          <li key={i}>
-                            {item.item}: {pricing.currency}{" "}
-                            {item.estimated_cost_ex_gst.toFixed(2)}{" "}
-                            {item.notes && (
-                              <span className="text-gray-500">
-                                {" "}
-                                ({item.notes})
-                              </span>
-                            )}
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                    <div>
-                      <p className="font-semibold text-xs">
-                        Market benchmarks
-                      </p>
-                      <ul className="list-disc ml-5">
-                        {pricing.breakdown.market_benchmarks.map((mb, i) => (
-                          <li key={i}>{mb}</li>
-                        ))}
-                      </ul>
-                    </div>
-                    <p>{pricing.breakdown.comparison_summary}</p>
-                    <p>{pricing.breakdown.markup_strategy}</p>
-                  </div>
-                </details>
               </div>
             )}
           </div>
@@ -946,12 +851,176 @@ export default function FullWorkflowWorkspace({ caseData }: { caseData: any }) {
               {pricing
                 ? `${pricing.currency} ${pricing.caf_recommended_sell_price.toFixed(
                     2
-                  )}`
-                : "Not priced yet"}
+                  )} via market brain`
+                : "Not priced with market brain yet"}
             </p>
           </div>
         )}
       </section>
+
+      {/* Pricing modal */}
+      {pricingModalOpen && selectedDiagnosis && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
+          <div className="bg-white rounded-xl shadow-lg max-w-xl w-full p-5 space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-semibold">
+                Pricing for: {selectedDiagnosis.title}
+              </h2>
+              <button
+                type="button"
+                onClick={closePricingModal}
+                className="text-sm text-gray-500"
+              >
+                Close
+              </button>
+            </div>
+
+            {/* Section A: Simple internal CAF estimate */}
+            <div className="border rounded-md p-3 bg-gray-50 text-sm space-y-1">
+              <h3 className="font-semibold text-sm">
+                Simple CAF estimate
+              </h3>
+              {simplePricing ? (
+                <>
+                  <p>
+                    Materials cost:{" "}
+                    {simplePricing.materialsCost.toFixed(2)} AUD
+                  </p>
+                  <p>
+                    Labour cost:{" "}
+                    {simplePricing.labourCost.toFixed(2)} AUD
+                    <span className="text-xs text-gray-500">
+                      {" "}
+                      (rate {DEFAULT_HOURLY_RATE} AUD per hour)
+                    </span>
+                  </p>
+                  <p>
+                    Attendance or call out:{" "}
+                    {simplePricing.attendanceCost.toFixed(2)} AUD
+                  </p>
+                  <p className="mt-1">
+                    Subcontractor total baseline A:{" "}
+                    {simplePricing.subbieBaseline.toFixed(2)} AUD
+                  </p>
+                  <p>
+                    CAF markup 20 percent: A × 1.2
+                  </p>
+                  <p className="font-semibold">
+                    CAF final recommended price B:{" "}
+                    {simplePricing.cafFinal.toFixed(2)} AUD
+                  </p>
+                </>
+              ) : (
+                <p>No estimate available.</p>
+              )}
+              <p className="text-xs text-gray-500 mt-1">
+                These are rough internal numbers to speed up the work. They will
+                be configurable later from the admin panel.
+              </p>
+            </div>
+
+            {/* Section B: Market pricing brain */}
+            <div className="border rounded-md p-3 bg-gray-50 text-xs space-y-2">
+              <div className="flex items-center justify-between">
+                <h3 className="font-semibold text-sm">
+                  Market pricing brain
+                </h3>
+                <button
+                  type="button"
+                  onClick={runMarketPricingBrain}
+                  disabled={loading.pricing}
+                  className="bg-slate-900 text-white text-xs px-3 py-1.5 rounded-md disabled:opacity-60"
+                >
+                  {loading.pricing
+                    ? "Running..."
+                    : "Run market pricing brain"}
+                </button>
+              </div>
+
+              {pricing && (
+                <div className="space-y-1 mt-2">
+                  <p className="text-sm font-semibold">
+                    CAF recommended sell price: {pricing.currency}{" "}
+                    {pricing.caf_recommended_sell_price.toFixed(2)}
+                  </p>
+                  <p>
+                    Market range: {pricing.currency}{" "}
+                    {pricing.fair_range_low.toFixed(2)} to{" "}
+                    {pricing.fair_range_high.toFixed(2)}
+                  </p>
+                  {typeof pricing.subcontractor_quote_incl_gst ===
+                    "number" && (
+                    <p>
+                      Subbie quote including GST: {pricing.currency}{" "}
+                      {pricing.subcontractor_quote_incl_gst.toFixed(2)}
+                    </p>
+                  )}
+                  <p>Position versus market: {pricing.position_vs_market}</p>
+                  <p>
+                    CAF position after markup:{" "}
+                    {pricing.caf_position_after_markup}
+                  </p>
+                  <p>
+                    Recommended markup:{" "}
+                    {pricing.recommended_markup_percent.toFixed(1)} percent (
+                    {pricing.currency}{" "}
+                    {pricing.recommended_markup_amount.toFixed(2)})
+                  </p>
+                  {pricing.should_negotiate_or_change_subbie && (
+                    <p className="text-red-600 font-semibold">
+                      Suggest negotiating or changing subcontractor.
+                    </p>
+                  )}
+
+                  <details className="mt-2">
+                    <summary className="cursor-pointer">
+                      Pricing breakdown
+                    </summary>
+                    <div className="mt-2 space-y-2">
+                      <p>{pricing.breakdown.scope_summary}</p>
+                      <div>
+                        <p className="font-semibold text-xs">
+                          Baseline costs
+                        </p>
+                        <ul className="list-disc ml-5">
+                          {pricing.breakdown.baseline_costs.map(
+                            (item, i) => (
+                              <li key={i}>
+                                {item.item}: {pricing.currency}{" "}
+                                {item.estimated_cost_ex_gst.toFixed(2)}{" "}
+                                {item.notes && (
+                                  <span className="text-gray-500">
+                                    {" "}
+                                    ({item.notes})
+                                  </span>
+                                )}
+                              </li>
+                            )
+                          )}
+                        </ul>
+                      </div>
+                      <div>
+                        <p className="font-semibold text-xs">
+                          Market benchmarks
+                        </p>
+                        <ul className="list-disc ml-5">
+                          {pricing.breakdown.market_benchmarks.map(
+                            (mb, i) => (
+                              <li key={i}>{mb}</li>
+                            )
+                          )}
+                        </ul>
+                      </div>
+                      <p>{pricing.breakdown.comparison_summary}</p>
+                      <p>{pricing.breakdown.markup_strategy}</p>
+                    </div>
+                  </details>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
